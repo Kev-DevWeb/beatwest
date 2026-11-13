@@ -8,6 +8,8 @@ export const BOUNDS = { yaw: 30 * DEG, pitchMin: 0, pitchMax: 14 * DEG };
 /** Songs start with this much quiet time so the player can settle in. */
 export const LEAD_IN = 2;
 export const MAX_SHOTS_WITHOUT_REST = 6;
+/** Longest run of rapid-fire burst targets before a half-beat breather. */
+export const MAX_BURST = 4;
 
 interface Tuning {
   minStrength: number;
@@ -19,13 +21,15 @@ interface Tuning {
   angularSpeed: number;
   maxFlick: number;
   civilianChance: number;
+  /** Most shots allowed in any stretch of four beats. */
+  maxPerBar: number;
 }
 
 export const TUNING: Record<Difficulty, Tuning> = {
-  easy: { minStrength: 0.5, minGapBeats: 2, minGapSec: 0.4, approach: 1.3, angularSpeed: 25 * DEG, maxFlick: 18 * DEG, civilianChance: 0 },
-  normal: { minStrength: 0.3, minGapBeats: 1, minGapSec: 0.3, approach: 1.1, angularSpeed: 40 * DEG, maxFlick: 26 * DEG, civilianChance: 0.35 },
-  hard: { minStrength: 0.22, minGapBeats: 0.25, minGapSec: 0.11, approach: 0.9, angularSpeed: 45 * DEG, maxFlick: 34 * DEG, civilianChance: 0.5 },
-  extreme: { minStrength: 0.08, minGapBeats: 0.25, minGapSec: 0.11, approach: 0.75, angularSpeed: 65 * DEG, maxFlick: 42 * DEG, civilianChance: 0.6 },
+  easy: { minStrength: 0.5, minGapBeats: 1, minGapSec: 0.4, approach: 1.3, angularSpeed: 25 * DEG, maxFlick: 18 * DEG, civilianChance: 0, maxPerBar: 99 },
+  normal: { minStrength: 0.28, minGapBeats: 0.5, minGapSec: 0.2, approach: 1.1, angularSpeed: 34 * DEG, maxFlick: 22 * DEG, civilianChance: 0.35, maxPerBar: 5 },
+  hard: { minStrength: 0.22, minGapBeats: 0.5, minGapSec: 0.19, approach: 1.0, angularSpeed: 40 * DEG, maxFlick: 26 * DEG, civilianChance: 0.45, maxPerBar: 8 },
+  extreme: { minStrength: 0.14, minGapBeats: 0.25, minGapSec: 0.1, approach: 0.85, angularSpeed: 52 * DEG, maxFlick: 32 * DEG, civilianChance: 0.55, maxPerBar: 10 },
 };
 
 interface Draft { kind: NoteKind; time: number; duration: number }
@@ -58,19 +62,51 @@ export function generateChart(analysis: Analysis, difficulty: Difficulty): Chart
     picked.push(o);
   }
 
-  // 2. Guarantee a pause of at least one beat every six shots (the revolver holds six).
+  // 1b. Cap sustained density: in any stretch of four beats keep only the strongest hits.
+  const span = 4 * beat;
+  for (let i = 0; i < picked.length; ) {
+    let j = i;
+    while (j + 1 < picked.length && picked[j + 1].time - picked[i].time < span) j++;
+    if (j - i + 1 > tune.maxPerBar) {
+      let weakest = i;
+      for (let k = i + 1; k <= j; k++) if (picked[k].strength < picked[weakest].strength) weakest = k;
+      picked.splice(weakest, 1);
+    } else i++;
+  }
+
+  // 2. Guarantee a pause of at least one beat every six shots (the revolver holds six),
+  //    and a half-beat breather after every full burst.
+  const burstGap = Math.max(beat * 0.3, 0.2);
   const shots: number[] = [];
-  let sinceRest = 0;
+  let sinceRest = 0, run = 1;
   for (const p of picked) {
     const gap = shots.length ? p.time - shots[shots.length - 1] : Infinity;
     if (gap >= beat) sinceRest = 0;
     else if (sinceRest >= MAX_SHOTS_WITHOUT_REST) continue;
+    if (run >= MAX_BURST && gap < 0.45 * beat) continue;
+    run = gap <= burstGap ? run + 1 : 1;
     shots.push(p.time);
     sinceRest++;
   }
 
+  // 2b. Reload cues: at a rest, if the six rounds would not last through the next run of
+  //     shots, mark a half-beat in that rest as the moment to reload.
+  const reloads: number[] = [];
+  let fired = 0;
+  for (let i = 0; i + 1 < shots.length; i++) {
+    fired++;
+    const gap = shots[i + 1] - shots[i];
+    if (gap < beat) continue;
+    let ahead = 1;
+    while (i + ahead + 1 < shots.length && shots[i + ahead + 1] - shots[i + ahead] < beat) ahead++;
+    if (fired + ahead > MAX_SHOTS_WITHOUT_REST) {
+      const mid = shots[i] + Math.min(gap / 2, beat);
+      reloads.push(analysis.phase + Math.round((mid - analysis.phase) / (beat / 2)) * (beat / 2));
+      fired = 0;
+    }
+  }
+
   // 3. Runs of three or more shots faster than ~5 per second become bursts.
-  const burstGap = Math.max(beat * 0.3, 0.2);
   const drafts: Draft[] = shots.map((time) => ({ kind: 'bandit', time, duration: 0 }));
   for (let i = 0; i < drafts.length; ) {
     let j = i;
@@ -94,7 +130,7 @@ export function generateChart(analysis: Analysis, difficulty: Difficulty): Chart
         extras.push({ kind: 'drone', time: t, duration });
         t += duration + beat;
       }
-    } else if (gapBeats >= 1.9 && i > 0 && rng() < tune.civilianChance) {
+    } else if (gapBeats >= 1.4 && i > 0 && rng() < tune.civilianChance) {
       extras.push({ kind: 'civilian', time: from + (to - from) / 2 - 0.5 * beat, duration: beat });
     }
   }
@@ -141,5 +177,5 @@ export function generateChart(analysis: Analysis, difficulty: Difficulty): Chart
     prevKind = d.kind;
   }
 
-  return { notes, bpm: analysis.bpm, phase: analysis.phase, duration: analysis.duration, difficulty, approach: tune.approach };
+  return { notes, reloads, bpm: analysis.bpm, phase: analysis.phase, duration: analysis.duration, difficulty, approach: tune.approach };
 }

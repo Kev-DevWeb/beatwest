@@ -29,6 +29,7 @@ export class Hud {
   private countdownEl = $('h-countdown');
   private bannerEl = $('h-banner');
   private arrowEl = $('h-arrow');
+  private reloadEl = $('h-reload');
   private popups = $('popups');
   private flashEl = $('flash');
   private mods = $('h-mods');
@@ -160,6 +161,17 @@ export class Hud {
     this.set('arrow', key, () => {
       this.arrowEl.classList.toggle('show', angle !== null);
       if (angle !== null) this.arrowEl.style.transform = `rotate(${-angle}rad) translateX(170px)`;
+    });
+  }
+
+  /** Ring closing on the ammo pips: press R when it lands. `fraction` 1 (far) -> 0 (now); null hides it. */
+  reloadCue(fraction: number | null): void {
+    const key = fraction === null ? 'off' : Math.round(fraction * 60);
+    this.set('reload', key, () => {
+      this.reloadEl.classList.toggle('show', fraction !== null);
+      if (fraction === null) return;
+      this.reloadEl.classList.toggle('now', fraction < 0.07);
+      this.reloadEl.style.transform = `scale(${1 + fraction * 0.9})`;
     });
   }
 

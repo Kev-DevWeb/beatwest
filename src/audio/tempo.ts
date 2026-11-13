@@ -81,6 +81,11 @@ export function estimateTempo(flux: Float32Array, frameRate: number, timeBias = 
   return { bpm, phase };
 }
 
+/** First point of the grid `phase + k * step` at or after `t`. */
+export function nextGrid(t: number, phase: number, step: number): number {
+  return phase + Math.ceil((t - phase) / step - 1e-9) * step;
+}
+
 /** Signed distance in seconds from `t` to the nearest beat. */
 export function beatDistance(t: number, bpm: number, phase: number): number {
   const period = 60 / bpm;

@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeSamples } from '../src/audio/analyze';
 import { renderDemoTrack } from '../src/audio/demoTrack';
-import { BOUNDS, generateChart, LEAD_IN, MAX_SHOTS_WITHOUT_REST } from '../src/chart/generator';
+import { BOUNDS, generateChart, LEAD_IN, MAX_BURST, MAX_SHOTS_WITHOUT_REST, TUNING } from '../src/chart/generator';
 import { isShot, type Difficulty } from '../src/chart/types';
 import { DeadEye } from '../src/game/deadEye';
 import { aimDirection, anglesTo, rayCapsule, raySphere } from '../src/game/hit';
 import { judge, judgeTracking } from '../src/game/judge';
 import { modMultiplier, modsKey, playbackRate, toggleMod } from '../src/game/mods';
-import { Revolver } from '../src/game/revolver';
+import { reloadClicks, Revolver } from '../src/game/revolver';
+import { nextGrid } from '../src/audio/tempo';
 import { comboMultiplier, rankFor, Score, unstableRate } from '../src/game/scoring';
 import { cmPer360, degPerCountFromCm, degPerCountFromGame, gameSensitivity, verticalFov } from '../src/input/sensitivity';
 
@@ -51,6 +52,45 @@ describe('chart generator', () => {
       }
     });
   }
+
+  for (const d of DIFFS) {
+    it(`${d}: density, bursts and reload cues stay playable`, () => {
+      const chart = generateChart(analysis, d);
+      const beat = 60 / chart.bpm;
+      const shots = chart.notes.filter(isShot).map((n) => n.time);
+      // Never more than the cap in any four beats.
+      for (const t of shots) {
+        expect(shots.filter((u) => u >= t && u < t + 4 * beat).length).toBeLessThanOrEqual(TUNING[d].maxPerBar);
+      }
+      // Rapid runs are short.
+      const quick = Math.max(beat * 0.3, 0.2);
+      let run = 1;
+      for (let i = 1; i < shots.length; i++) {
+        run = shots[i] - shots[i - 1] <= quick ? run + 1 : 1;
+        expect(run).toBeLessThanOrEqual(MAX_BURST);
+      }
+      // Reloading on every cue is enough to never run dry.
+      let ammo = 6, r = 0;
+      for (const t of shots) {
+        while (r < chart.reloads.length && chart.reloads[r] < t) { ammo = 6; r++; }
+        ammo--;
+        expect(ammo).toBeGreaterThanOrEqual(0);
+      }
+      // Cues sit on the half-beat grid, clear of the shots around them.
+      for (const c of chart.reloads) {
+        const k = (c - chart.phase) / (beat / 2);
+        expect(Math.abs(k - Math.round(k))).toBeLessThan(1e-6);
+        expect(Math.min(...shots.map((t) => Math.abs(t - c)))).toBeGreaterThan(0.2 * beat);
+      }
+    });
+  }
+
+  it('normal is busier than before and hard is no longer double it', () => {
+    const count = (d: Difficulty) => generateChart(analysis, d).notes.filter(isShot).length;
+    expect(count('normal')).toBeGreaterThan(80);
+    expect(count('hard')).toBeLessThan(count('normal') * 1.45);
+    expect(count('extreme')).toBeLessThan(count('normal') * 2);
+  });
 
   it('uses every note type on the demo track', () => {
     const kinds = new Set(DIFFS.flatMap((d) => generateChart(analysis, d).notes.map((n) => n.kind)));
@@ -140,17 +180,35 @@ describe('revolver', () => {
     expect(r.fire(7)).toBe(false);
   });
 
-  it('reloads instantly on the beat and slowly off it', () => {
+  it('reloads instantly on the beat, and on the next subdivision off it', () => {
     const r = new Revolver();
     r.fire(0);
-    expect(r.reload(1, 0.02, 0.5)).toBe('perfect');
+    expect(r.reload(1, 0.02, 1.25)).toEqual({ result: 'perfect', readyAt: 1 });
     expect(r.canFire(1)).toBe(true);
     r.fire(1);
-    expect(r.reload(1.2, 0.2, 0.5)).toBe('slow');
-    expect(r.canFire(1.4)).toBe(false);
-    expect(r.reload(1.4, 0, 0.5)).toBe('busy');
-    expect(r.canFire(1.7)).toBe(true);
-    expect(r.reload(2, 0, 0.5)).toBe('full');
+    expect(r.reload(1.1, 0.2, 1.25)).toEqual({ result: 'slow', readyAt: 1.25 });
+    expect(r.canFire(1.2)).toBe(false);
+    expect(r.reload(1.2, 0, 1.5).result).toBe('busy');
+    expect(r.canFire(1.25)).toBe(true);
+    expect(r.reload(2, 0, 2.25).result).toBe('full');
+  });
+
+  it('puts every round on a subdivision of the beat', () => {
+    const beat = 0.5, phase = 0.1;
+    const onGrid = (t: number, step: number) => Math.abs((t - phase) / step - Math.round((t - phase) / step)) < 1e-6;
+    // Off-beat: three rounds as sixteenths leading into the half-beat the gun is ready on.
+    const slow = reloadClicks(1.62, 2.1, 3, beat, phase, false);
+    expect(slow).toHaveLength(3);
+    slow.forEach((c) => { expect(onGrid(c, beat / 4)).toBe(true); expect(c).toBeGreaterThan(1.62); expect(c).toBeLessThan(2.1); });
+    // Six rounds do not fit as sixteenths, so they become thirty-seconds.
+    const full = reloadClicks(1.7, 2.1, 6, beat, phase, false);
+    full.forEach((c) => { expect(onGrid(c, beat / 8)).toBe(true); expect(c).toBeGreaterThanOrEqual(1.7); });
+    // Perfect: a flourish of thirty-seconds right after the press.
+    const perfect = reloadClicks(2.1, 2.1, 6, beat, phase, true);
+    expect(perfect[0]).toBeGreaterThan(2.1);
+    expect(perfect[5] - perfect[0]).toBeCloseTo((5 * beat) / 8);
+    perfect.forEach((c) => expect(onGrid(c, beat / 8)).toBe(true));
+    expect(nextGrid(1.62, phase, beat / 2)).toBeCloseTo(1.85);
   });
 });
 

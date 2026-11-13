@@ -76,6 +76,11 @@ export class AudioPlayer {
     return (this.ctx.currentTime - this.startAt - this.latency - this.offset) * this.rate;
   }
 
+  /** AudioContext time at which a sound must start to be heard at the given song time. */
+  contextTimeAt(songTime: number): number {
+    return this.startAt + songTime / this.rate;
+  }
+
   pause(): Promise<void> { return this.ctx.suspend(); }
   resume(): Promise<void> { return this.ctx.resume(); }
 

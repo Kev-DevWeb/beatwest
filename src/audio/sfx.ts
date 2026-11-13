@@ -77,12 +77,29 @@ export class Sfx {
     this.tone(900, 700, 0.06, 0.03, 'square');
   }
 
-  /** Cylinder out, rounds in, cylinder shut. A perfect reload ends on a bright note. */
-  reload(perfect: boolean): void {
-    this.burst(0.3, 0.03, 2600);
-    for (let i = 0; i < 4; i++) this.burst(0.12, 0.015, 4800, 'highpass', 0.03 + i * 0.022);
-    this.burst(0.34, 0.04, 1800, 'bandpass', 0.13);
-    this.tone(perfect ? 988 : 330, perfect ? 1480 : 300, 0.13, 0.1, 'triangle', 0.13);
+  /** Cylinder swinging open: played the moment R is pressed. */
+  reloadOpen(): void {
+    this.burst(0.28, 0.03, 2600);
+    this.tone(240, 190, 0.07, 0.05, 'square');
+  }
+
+  /**
+   * One round sliding into a chamber, scheduled at an exact AudioContext time so it lands on
+   * a subdivision of the beat. `index` (0..5) raises the pitch as the cylinder fills.
+   */
+  bullet(at: number, index: number): void {
+    const d = Math.max(0, at - this.ctx.currentTime);
+    const f = 620 * Math.pow(1.122, index);
+    this.burst(0.2, 0.02, 3800 + index * 300, 'bandpass', d, 4);
+    this.tone(f, f * 0.97, 0.1, 0.05, 'triangle', d);
+  }
+
+  /** Cylinder snapping shut, scheduled on the beat. A perfect reload adds a bright note. */
+  reloadClose(at: number, perfect: boolean): void {
+    const d = Math.max(0, at - this.ctx.currentTime);
+    this.burst(0.36, 0.045, 1700, 'bandpass', d);
+    this.tone(160, 90, 0.26, 0.07, 'sine', d);
+    if (perfect) this.tone(988, 1480, 0.12, 0.12, 'triangle', d);
   }
 
   deadEye(): void {

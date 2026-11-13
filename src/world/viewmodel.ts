@@ -12,6 +12,7 @@ export class Revolver3D {
   private drumTarget = 0;
   private reload = 0;
   private reloadTime = 0.3;
+  private flourish = false;
   private sway = 0;
 
   constructor(m: Mats) {
@@ -67,11 +68,21 @@ export class Revolver3D {
     this.light.intensity = 5;
   }
 
-  /** @param seconds how long the gun is out of action (0 for a perfect, on-beat reload) */
+  /** @param seconds real seconds until the cylinder snaps shut (0 for a perfect, on-beat reload) */
   startReload(seconds: number): void {
-    this.reloadTime = Math.max(0.28, seconds);
+    this.flourish = seconds <= 0;
+    this.reloadTime = this.flourish ? 0.34 : Math.max(0.12, seconds);
     this.reload = this.reloadTime;
-    this.drumTarget += Math.PI * 4;
+  }
+
+  /** One round going into the cylinder: it turns one chamber. */
+  loadRound(): void {
+    this.drumTarget += Math.PI / 3;
+  }
+
+  /** World position of the cylinder, where spent casings drop from. */
+  breech(target = new THREE.Vector3()): THREE.Vector3 {
+    return this.drum.getWorldPosition(target);
   }
 
   /** World position of the muzzle, for tracers. */
@@ -81,17 +92,32 @@ export class Revolver3D {
 
   update(dt: number, lookSpeed: number): void {
     this.recoil = Math.max(0, this.recoil - dt * 7.5);
+    const reloading = this.reload > 0;
+    const p = reloading ? 1 - this.reload / this.reloadTime : 1;      // 0 -> 1 through the reload
     this.reload = Math.max(0, this.reload - dt);
+    if (reloading && this.reload === 0) {                             // cylinder snaps shut
+      this.light.intensity = 2.5;
+      this.recoil = Math.max(this.recoil, 0.4);
+    }
     this.light.intensity = Math.max(0, this.light.intensity - dt * 70);
     if (this.recoil < 0.85) this.flash.visible = false;
     this.drum.rotation.z += (this.drumTarget - this.drum.rotation.z) * Math.min(1, dt * 18);
     // The gun lags slightly behind fast turns, like a real arm would.
     this.sway += (Math.max(-1, Math.min(1, lookSpeed * 0.15)) - this.sway) * Math.min(1, dt * 10);
-    const r = this.reload / this.reloadTime;
-    const dip = Math.sin(Math.min(1, r) * Math.PI);
+    // Reload: tip the gun over, swing the cylinder out, hold while the rounds go in, then
+    // snap back. A perfect reload is a quick spin round the trigger finger instead.
+    let open = 0, spin = 0;
+    if (p < 1) {
+      if (this.flourish) spin = (1 - Math.pow(1 - p, 2)) * Math.PI * 2;
+      else {
+        const rise = Math.min(1, p / 0.22);
+        open = Math.min(rise * (2 - rise), Math.min(1, (1 - p) / 0.1));
+      }
+    }
+    this.drum.position.set(-open * 0.045, 0.018 - open * 0.014, -0.045);
     const kick = this.recoil * this.recoil;
-    this.group.rotation.set(kick * 0.42 + dip * 0.9, this.sway * 0.06, dip * 0.5 - this.sway * 0.05);
-    this.group.position.set(0.2 + this.sway * 0.012, -0.19 - dip * 0.1 + kick * 0.015, -0.46 + kick * 0.06);
+    this.group.rotation.set(kick * 0.42 + open * 0.62 - spin, this.sway * 0.06 - open * 0.35, open * 0.75 - this.sway * 0.05);
+    this.group.position.set(0.2 + this.sway * 0.012 - open * 0.05, -0.19 + open * 0.035 + kick * 0.015, -0.46 + kick * 0.06);
   }
 }
 

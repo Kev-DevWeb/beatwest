@@ -40,17 +40,17 @@ export class Fx {
   }
 
   /** Chunks flying off a destroyed target. `push` is the direction the bullet was travelling. */
-  shatter(at: THREE.Vector3, color: THREE.Color, count: number, push: THREE.Vector3): void {
+  shatter(at: THREE.Vector3, color: THREE.Color, count: number, push: THREE.Vector3, energy = 1): void {
     for (let n = 0; n < count; n++) {
       const i = this.cursor = (this.cursor + 1) % MAX_SHARDS;
-      const a = Math.random() * Math.PI * 2, s = 1.5 + Math.random() * 4.5;
+      const a = Math.random() * Math.PI * 2, s = (1.5 + Math.random() * 4.5) * energy;
       this.live[i] = {
         life: 0, max: 0.55 + Math.random() * 0.45,
-        p: at.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.4)),
-        v: new THREE.Vector3(Math.cos(a) * s + push.x * 3, 1.5 + Math.random() * 4, Math.sin(a) * s + push.z * 3),
+        p: at.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.4).multiplyScalar(energy < 1 ? 0.05 : 1)),
+        v: new THREE.Vector3(Math.cos(a) * s * (energy < 1 ? 0.3 : 1) + push.x * 3, (1.5 + Math.random() * 4) * energy, Math.sin(a) * s * (energy < 1 ? 0.3 : 1) + push.z * 3),
         spin: new THREE.Vector3(Math.random() * 12 - 6, Math.random() * 12 - 6, Math.random() * 12 - 6),
         rot: new THREE.Euler(),
-        size: 0.06 + Math.random() * 0.13,
+        size: (0.06 + Math.random() * 0.13) * (energy < 1 ? 0.2 : 1),
       };
       this.shards.setColorAt(i, colour.copy(color).multiplyScalar(0.5 + Math.random() * 0.9));
     }

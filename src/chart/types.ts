@@ -18,6 +18,8 @@ export interface Note {
 
 export interface Chart {
   notes: Note[];
+  /** Song times (on the half-beat grid) cued as the moment to reload. */
+  reloads: number[];
   bpm: number;
   phase: number;
   duration: number;
