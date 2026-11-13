@@ -281,3 +281,24 @@ describe('sensitivity', () => {
     expect(verticalFov(103)).toBeCloseTo(70.5, 0);
   });
 });
+
+describe('chart generator at the browser sample rate', () => {
+  // Browsers usually run audio at 48 kHz; the curve must hold there too, not only at 44.1 kHz.
+  const at48k = analyzeSamples(renderDemoTrack(48000), 48000);
+
+  it('keeps a steady progression between difficulties', () => {
+    const counts = DIFFS.map((d) => generateChart(at48k, d).notes.filter(isShot).length);
+    for (let i = 1; i < counts.length; i++) {
+      expect(counts[i]).toBeGreaterThan(counts[i - 1] * 1.08);
+      expect(counts[i]).toBeLessThan(counts[i - 1] * 1.45);
+    }
+  });
+
+  it('gives nearly the same density as at 44.1 kHz', () => {
+    for (const d of DIFFS) {
+      const a = generateChart(analysis, d).notes.filter(isShot).length;
+      const b = generateChart(at48k, d).notes.filter(isShot).length;
+      expect(Math.abs(a - b) / a).toBeLessThan(0.12);
+    }
+  });
+});

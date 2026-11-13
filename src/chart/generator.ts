@@ -1,4 +1,5 @@
 import type { Analysis } from '../audio/analyze';
+import { beatDistance } from '../audio/tempo';
 import { makeRng } from './rng';
 import type { Chart, Difficulty, Note, NoteKind } from './types';
 
@@ -27,8 +28,8 @@ interface Tuning {
 
 export const TUNING: Record<Difficulty, Tuning> = {
   easy: { minStrength: 0.5, minGapBeats: 1, minGapSec: 0.4, approach: 1.3, angularSpeed: 25 * DEG, maxFlick: 18 * DEG, civilianChance: 0, maxPerBar: 99 },
-  normal: { minStrength: 0.28, minGapBeats: 0.5, minGapSec: 0.2, approach: 1.1, angularSpeed: 34 * DEG, maxFlick: 22 * DEG, civilianChance: 0.35, maxPerBar: 5 },
-  hard: { minStrength: 0.22, minGapBeats: 0.5, minGapSec: 0.19, approach: 1.0, angularSpeed: 40 * DEG, maxFlick: 26 * DEG, civilianChance: 0.45, maxPerBar: 8 },
+  normal: { minStrength: 0.25, minGapBeats: 0.5, minGapSec: 0.2, approach: 1.1, angularSpeed: 34 * DEG, maxFlick: 22 * DEG, civilianChance: 0.35, maxPerBar: 5 },
+  hard: { minStrength: 0.22, minGapBeats: 0.5, minGapSec: 0.19, approach: 1.0, angularSpeed: 40 * DEG, maxFlick: 26 * DEG, civilianChance: 0.45, maxPerBar: 7 },
   extreme: { minStrength: 0.14, minGapBeats: 0.25, minGapSec: 0.1, approach: 0.85, angularSpeed: 52 * DEG, maxFlick: 32 * DEG, civilianChance: 0.55, maxPerBar: 10 },
 };
 
@@ -49,30 +50,37 @@ export function generateChart(analysis: Analysis, difficulty: Difficulty): Chart
   const minGap = Math.max(tune.minGapSec, tune.minGapBeats * beat * 0.9);
   const end = analysis.duration - 0.5;
 
-  // 1. Choose which hits in the music become shots.
-  const picked: { time: number; strength: number }[] = [];
-  for (const o of analysis.onsets) {
-    if (o.time < LEAD_IN || o.time > end || o.strength < tune.minStrength) continue;
-    const last = picked[picked.length - 1];
-    if (last && o.time - last.time < minGap) {
-      const before = picked[picked.length - 2];
-      if (o.strength > last.strength && (!before || o.time - before.time >= minGap)) picked[picked.length - 1] = o;
-      continue;
-    }
-    picked.push(o);
-  }
-
-  // 1b. Cap sustained density: in any stretch of four beats keep only the strongest hits.
+  // 1. Choose which hits in the music become shots. Hits are taken in order of importance
+  //    (on the beat first, then half-beats, then the rest; louder first within each) as long
+  //    as they keep the minimum spacing and the density cap. Picking by rank rather than in
+  //    song order keeps the result stable when the analysis shifts slightly.
   const span = 4 * beat;
-  for (let i = 0; i < picked.length; ) {
-    let j = i;
-    while (j + 1 < picked.length && picked[j + 1].time - picked[i].time < span) j++;
-    if (j - i + 1 > tune.maxPerBar) {
-      let weakest = i;
-      for (let k = i + 1; k <= j; k++) if (picked[k].strength < picked[weakest].strength) weakest = k;
-      picked.splice(weakest, 1);
-    } else i++;
+  const candidates = analysis.onsets
+    .filter((o) => o.time >= LEAD_IN && o.time <= end && o.strength >= tune.minStrength)
+    .map((o) => {
+      const off = Math.abs(beatDistance(o.time, analysis.bpm, analysis.phase)) / beat;   // 0 on the beat, 0.5 half-way
+      return { time: o.time, rank: o.strength + (off < 0.1 ? 2 : off > 0.4 ? 1 : 0) };
+    })
+    .sort((x, y) => y.rank - x.rank || x.time - y.time);
+  const kept: number[] = [];
+  const countFrom = (start: number, from: number) => {
+    let n = 0;
+    for (let k = from; k < kept.length && kept[k] < start + span; k++) n++;
+    return n;
+  };
+  for (const c of candidates) {
+    let idx = 0;
+    while (idx < kept.length && kept[idx] < c.time) idx++;
+    if (idx > 0 && c.time - kept[idx - 1] < minGap) continue;
+    if (idx < kept.length && kept[idx] - c.time < minGap) continue;
+    // Would any four-beat stretch containing this hit exceed the cap?
+    let fits = countFrom(c.time, idx) + 1 <= tune.maxPerBar;
+    for (let k = idx - 1; fits && k >= 0 && kept[k] > c.time - span; k--) {
+      if (countFrom(kept[k], k) + 1 > tune.maxPerBar) fits = false;
+    }
+    if (fits) kept.splice(idx, 0, c.time);
   }
+  const picked = kept.map((time) => ({ time }));
 
   // 2. Guarantee a pause of at least one beat every six shots (the revolver holds six),
   //    and a half-beat breather after every full burst.
