@@ -32,6 +32,9 @@ export function initSettings(settings: Settings, onChange: () => void): () => vo
     input('s-music').value = String(settings.musicVolume);
     input('s-sfx').value = String(settings.sfxVolume);
     input('s-offset').value = String(Math.round(settings.offsetMs));
+    $<HTMLSelectElement>('s-palette').value = settings.palette;
+    $<HTMLSelectElement>('s-quality').value = settings.quality;
+    input('s-motion').value = String(settings.motion);
     renderCrosshair($('s-preview'), settings.crosshair);
   };
   const bind = (id: string, apply: (value: number, el: HTMLInputElement) => void) => {
@@ -71,6 +74,15 @@ export function initSettings(settings: Settings, onChange: () => void): () => vo
   bind('s-music', (v) => { settings.musicVolume = v; });
   bind('s-sfx', (v) => { settings.sfxVolume = v; });
   bind('s-offset', (v) => { settings.offsetMs = v; });
+  bind('s-motion', (v) => { settings.motion = v; });
+  for (const id of ['s-palette', 's-quality'] as const) {
+    $(id).addEventListener('change', (e) => {
+      const value = (e.target as HTMLSelectElement).value;
+      if (id === 's-palette') settings.palette = value as Settings['palette'];
+      else settings.quality = value as Settings['quality'];
+      onChange();
+    });
+  }
   refresh();
   return refresh;
 }
@@ -141,6 +153,8 @@ export function showResults(result: Result, title: string, subtitle: string, new
   const s = result.score;
   const rank = $('r-rank');
   rank.textContent = result.failed ? 'ABATIDO' : s.rank;
+  $('r-head').textContent = result.failed ? 'Te abatieron' : 'Recompensa cobrada';
+  $('r-score').textContent = s.score.toLocaleString('es');
   rank.classList.toggle('fail', result.failed);
   $('r-title').textContent = title;
   $('r-sub').textContent = subtitle + (result.autoplay ? ' · AUTO (no se guarda)' : newBest ? ' · ¡Nuevo récord!' : '');
@@ -149,7 +163,6 @@ export function showResults(result: Result, title: string, subtitle: string, new
   const hits = s.errors.length;   // every bullet that connected recorded a timing error
   const stat = (label: string, value: string) => `<div><span>${label}</span><b>${value}</b></div>`;
   $('r-stats').innerHTML = [
-    stat('Puntuación', s.score.toLocaleString('es')),
     stat('Precisión', (s.accuracy * 100).toFixed(2) + '%'),
     stat('Combo máximo', s.maxCombo + 'x'),
     stat('Perfect / Good / Ok', `${s.counts.perfect} / ${s.counts.good} / ${s.counts.ok}`),
@@ -180,19 +193,19 @@ function drawHistogram(canvas: HTMLCanvasElement, errors: number[]): void {
     g.fillStyle = color;
     g.fillRect(w / 2 - (ms / range) * (w / 2), 0, (ms / range) * w, h - 14);
   };
-  zone(WINDOWS.good * 1000, 'rgba(93,255,138,0.08)');
-  zone(WINDOWS.perfect * 1000, 'rgba(0,255,225,0.12)');
+  zone(WINDOWS.good * 1000, 'rgba(42,26,20,0.08)');
+  zone(WINDOWS.perfect * 1000, 'rgba(42,26,20,0.12)');
   counts.forEach((c, i) => {
     if (!c) return;
     const centre = ((i + 0.5) / bins) * 2 * range - range;
-    g.fillStyle = Math.abs(centre) <= WINDOWS.perfect * 1000 ? '#00ffe1' : Math.abs(centre) <= WINDOWS.good * 1000 ? '#5dff8a' : '#b79fd6';
+    g.fillStyle = Math.abs(centre) <= WINDOWS.perfect * 1000 ? '#a1261d' : Math.abs(centre) <= WINDOWS.good * 1000 ? '#6b5140' : '#9c8468';
     const bh = (c / max) * (h - 20);
     g.fillRect(i * bw + 1, h - 14 - bh, bw - 2, bh);
   });
-  g.fillStyle = 'rgba(255,255,255,0.5)';
+  g.fillStyle = 'rgba(42,26,20,0.6)';
   g.fillRect(w / 2 - 0.5, 0, 1, h - 14);
   g.font = '11px monospace';
-  g.fillStyle = '#b79fd6';
+  g.fillStyle = '#6b5140';
   g.textAlign = 'left'; g.fillText(`-${range} ms`, 2, h - 2);
   g.textAlign = 'center'; g.fillText('0', w / 2, h - 2);
   g.textAlign = 'right'; g.fillText(`+${range} ms`, w - 2, h - 2);

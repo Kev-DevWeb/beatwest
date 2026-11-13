@@ -3,9 +3,14 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { makeRng } from '../chart/rng';
 import { aimDirection, type V3 } from '../game/hit';
 import { verticalFov } from '../input/sensitivity';
+import { makeMaterials, type Mats } from './build';
+import { SKY, WORLD } from './palette';
+import { Sky } from './sky';
+import { makeTextures, type Textures } from './textures';
+import { buildTown, LOOP, type TownPiece } from './town';
+import { buildCart, Revolver3D } from './viewmodel';
 
 /** Metres per second of song the camera travels down the street. */
 export const SPEED = 4;
@@ -21,234 +26,127 @@ export function aimPoint(t: number, yaw: number, pitch: number): V3 {
   return { x: o.x + d.x * TARGET_DISTANCE, y: o.y + d.y * TARGET_DISTANCE, z: o.z + d.z * TARGET_DISTANCE };
 }
 
-export const NEON = { magenta: 0xff2bd6, cyan: 0x00ffe1, amber: 0xffa53a, red: 0xff3344, green: 0x5dff8a };
+export type Quality = 'low' | 'medium' | 'high';
+const QUALITY: Record<Quality, { pixelRatio: number; bloom: boolean; dust: number; samples: number }> = {
+  low: { pixelRatio: 1, bloom: false, dust: 0, samples: 0 },
+  medium: { pixelRatio: 1.25, bloom: true, dust: 120, samples: 2 },
+  high: { pixelRatio: 2, bloom: true, dust: 240, samples: 4 },
+};
 
-const LOOP = 140;
 const AHEAD_MARGIN = 14;
+const GROUND_TILE = 12;
 
-interface Looping { object: THREE.Object3D; baseZ: number }
+/** Everything about one frame the stage needs from the game. */
+export interface Frame {
+  songTime: number;
+  yaw: number;
+  pitch: number;
+  dt: number;
+  deadEye: boolean;
+  /** Loudness of the music right now, 0..1. */
+  energy: number;
+  /** Metres to drop the camera (the fall when a run is failed). */
+  fall: number;
+}
 
 export class Stage {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
-  readonly camera = new THREE.PerspectiveCamera(70, 1, 0.05, 900);
-  /** Targets and effects are added here. */
+  readonly camera = new THREE.PerspectiveCamera(70, 1, 0.03, 1200);
+  /** Targets, covers and effects are added here. */
   readonly dynamic = new THREE.Group();
+  readonly mats: Mats;
+  readonly textures: Textures;
+  readonly gun: Revolver3D;
   private composer: EffectComposer;
   private bloom: UnrealBloomPass;
-  private looping: Looping[] = [];
-  private backdrop = new THREE.Group();
-  private grid: THREE.GridHelper;
-  private gun = new THREE.Group();
-  private recoil = 0;
+  private sky: Sky;
+  private town: TownPiece[];
+  private ground: THREE.Mesh;
+  private track: THREE.Mesh;
+  private cart: THREE.Group;
   private pulse = 0;
-  private gunFlash: THREE.Mesh;
+  private shakeAmount = 0;
+  private punch = 0;
+  private baseFov = 70;
+  private lastZ = 0;
+  private lastYaw = 0;
+  private lanternBase: THREE.Color;
+  private quality: Quality;
+  /** 0..1 multiplier for camera shake and sway, from settings. */
+  motion = 1;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, quality: Quality) {
+    this.quality = quality;
+    const q = QUALITY[quality];
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.scene.fog = new THREE.Fog(0x1a0830, 25, 150);
-    this.scene.add(new THREE.AmbientLight(0x8a6cff, 1.3));
-    const sun = new THREE.DirectionalLight(0xff8a5c, 1.6);
-    sun.position.set(0, 12, -30);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatio));
+    this.textures = makeTextures();
+    this.mats = makeMaterials(this.textures);
+    this.lanternBase = this.mats.lantern.color.clone();
+
+    this.scene.fog = new THREE.Fog(SKY.fog, 18, 150);
+    this.scene.add(new THREE.HemisphereLight(0xa87a9a, 0x2a1a1c, 1.5));
+    // Low sun from ahead and slightly to the left: one side of the street warm, the other in shade.
+    const sun = new THREE.DirectionalLight(0xff9a5c, 2.4);
+    sun.position.set(-0.55, 0.4, -1);
     this.scene.add(sun);
-    this.scene.add(this.camera, this.dynamic, this.backdrop);
+    this.scene.add(this.camera, this.dynamic);
+
+    this.sky = new Sky(this.textures, q.dust);
+    this.scene.add(this.sky.group);
+
+    // Dirt street and the rail the cart runs on; both scroll their texture instead of moving.
+    this.textures.dirt.repeat.set(600 / GROUND_TILE, 600 / GROUND_TILE);
+    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshLambertMaterial({ color: WORLD.ground, map: this.textures.dirt }));
+    this.ground.rotation.x = -Math.PI / 2;
+    this.textures.track.repeat.set(1, 260 / 1.3);
+    this.track = new THREE.Mesh(new THREE.PlaneGeometry(2.3, 260), new THREE.MeshLambertMaterial({ color: 0x4a3a34, map: this.textures.track }));
+    this.track.rotation.x = -Math.PI / 2;
+    this.track.position.y = 0.015;
+    const rails = new THREE.Group();
+    for (const x of [-0.72, 0.72]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.1, 260), this.mats.metal);
+      rail.position.set(x, 0.07, 0);
+      const shine = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.01, 260), new THREE.MeshBasicMaterial({ color: 0x8a5a48 }));
+      shine.position.set(x, 0.125, 0);
+      rails.add(rail, shine);
+    }
+    this.track.add(rails);
+    rails.rotation.x = Math.PI / 2;
+    this.scene.add(this.ground, this.track);
+
+    this.town = buildTown(this.mats, this.textures);
+    this.town.forEach((p) => this.scene.add(p.object));
+
+    this.cart = buildCart(this.mats);
+    this.scene.add(this.cart);
+    this.gun = new Revolver3D(this.mats);
+    this.camera.add(this.gun.group);
 
     const size = new THREE.Vector2(window.innerWidth, window.innerHeight);
-    const target = new THREE.WebGLRenderTarget(size.x, size.y, { samples: 4, type: THREE.HalfFloatType });
+    const target = new THREE.WebGLRenderTarget(size.x, size.y, { samples: q.samples, type: THREE.HalfFloatType });
     this.composer = new EffectComposer(this.renderer, target);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(size, 0.55, 0.45, 0.3);
+    // High threshold: only over-bright things (targets, lanterns, neon signs) bloom.
+    this.bloom = new UnrealBloomPass(size, 0.7, 0.5, 0.95);
+    this.bloom.enabled = q.bloom;
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
 
-    this.buildBackdrop();
-    this.grid = this.buildGround();
-    this.buildTown();
-    this.gunFlash = this.buildGun();
     this.resize();
     window.addEventListener('resize', () => this.resize());
   }
 
-  private buildBackdrop(): void {
-    const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(700, 24, 12),
-      new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        depthWrite: false,
-        fog: false,
-        vertexShader: 'varying vec3 p; void main(){ p = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-        fragmentShader: `varying vec3 p;
-          void main(){
-            float h = clamp(normalize(p).y, 0.0, 1.0);
-            vec3 horizon = vec3(0.42, 0.08, 0.30), top = vec3(0.03, 0.01, 0.09);
-            gl_FragColor = vec4(mix(horizon, top, pow(h, 0.45)), 1.0);
-          }`,
-      }),
-    );
-    const sun = new THREE.Mesh(
-      new THREE.CircleGeometry(85, 48),
-      new THREE.ShaderMaterial({
-        fog: false,
-        transparent: true,
-        depthWrite: false,
-        vertexShader: 'varying vec2 u; void main(){ u = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-        fragmentShader: `varying vec2 u;
-          void main(){
-            float band = fract(u.y * 16.0);
-            if (u.y < 0.55 && band < 0.12 + (0.55 - u.y) * 0.9) discard;
-            gl_FragColor = vec4(mix(vec3(0.95, 0.16, 0.45), vec3(1.0, 0.62, 0.18), u.y) * 0.5, 1.0);
-          }`,
-      }),
-    );
-    sun.position.set(0, 28, -520);
-    this.backdrop.add(sky, sun);
-
-    const mesa = new THREE.MeshBasicMaterial({ color: 0x1a0a2e, fog: false });
-    const rng = makeRng(77);
-    for (let i = 0; i < 14; i++) {
-      const w = 40 + rng() * 70, h = 14 + rng() * 34;
-      const m = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.32, w * 0.5, h, 7), mesa);
-      const side = i % 2 ? 1 : -1;
-      m.position.set(side * (70 + rng() * 240), h / 2 - 1, -260 - rng() * 180);
-      this.backdrop.add(m);
-    }
-  }
-
-  private buildGround(): THREE.GridHelper {
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(900, 900),
-      new THREE.MeshBasicMaterial({ color: 0x0b0418 }),
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.03;
-    this.backdrop.add(ground);
-    const grid = new THREE.GridHelper(320, 160, NEON.magenta, 0x6a2a9c);
-    (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.55;
-    this.scene.add(grid);
-    for (const x of [-0.75, 0.75]) {
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.06, 320), new THREE.MeshBasicMaterial({ color: NEON.cyan }));
-      rail.position.set(x, 0.03, -120);
-      this.backdrop.add(rail);
-    }
-    return grid;
-  }
-
-  private wantedTexture(): THREE.Texture {
-    const c = document.createElement('canvas');
-    c.width = 256; c.height = 128;
-    const g = c.getContext('2d')!;
-    g.fillStyle = 'rgba(20,4,40,0.85)';
-    g.fillRect(0, 0, 256, 128);
-    g.strokeStyle = '#ffa53a';
-    g.lineWidth = 6;
-    g.strokeRect(6, 6, 244, 116);
-    g.fillStyle = '#ffa53a';
-    g.font = 'bold 54px Georgia, serif';
-    g.textAlign = 'center';
-    g.fillText('WANTED', 128, 66);
-    g.font = 'bold 22px monospace';
-    g.fillStyle = '#00ffe1';
-    g.fillText('DEAD OR OFFLINE', 128, 102);
-    const t = new THREE.CanvasTexture(c);
-    t.colorSpace = THREE.SRGBColorSpace;
-    return t;
-  }
-
-  private buildTown(): void {
-    const rng = makeRng(1887);
-    const box = new THREE.BoxGeometry(1, 1, 1);
-    const wall = [0x1b0f33, 0x231040, 0x16122e].map((c) => new THREE.MeshLambertMaterial({ color: c }));
-    const glow = [NEON.magenta, NEON.cyan, NEON.amber].map((c) => new THREE.MeshBasicMaterial({ color: c }));
-    const dim = new THREE.MeshBasicMaterial({ color: 0x2c1750 });
-    const sign = new THREE.MeshBasicMaterial({ map: this.wantedTexture(), transparent: true });
-    const cactus = new THREE.MeshBasicMaterial({ color: NEON.green, wireframe: true });
-
-    const add = (object: THREE.Object3D, z: number) => {
-      object.position.z = z;
-      this.scene.add(object);
-      this.looping.push({ object, baseZ: z });
-    };
-    const part = (parent: THREE.Object3D, mat: THREE.Material, sx: number, sy: number, sz: number, x: number, y: number, z: number) => {
-      const m = new THREE.Mesh(box, mat);
-      m.scale.set(sx, sy, sz);
-      m.position.set(x, y, z);
-      parent.add(m);
-    };
-
-    for (const side of [-1, 1]) {
-      for (let i = 0; i < LOOP / 10; i++) {
-        const g = new THREE.Group();
-        const w = 6 + rng() * 3, h = 5 + rng() * 7, depth = 7 + rng() * 2;
-        const front = side * 10.5;                    // x of the street-facing wall
-        const cx = front + side * (w / 2);
-        part(g, wall[Math.floor(rng() * 3)], w, h, depth, cx, h / 2, 0);
-        // False front, the classic western facade.
-        part(g, wall[Math.floor(rng() * 3)], 0.4, h + 1.6, depth * 0.9, front, (h + 1.6) / 2, 0);
-        const trim = glow[Math.floor(rng() * 3)];
-        part(g, trim, 0.12, 0.12, depth * 0.92, front - side * 0.25, h + 1.6, 0);
-        // Porch roof and posts.
-        part(g, wall[0], 2.2, 0.15, depth * 0.9, front - side * 1.1, 3, 0);
-        for (const pz of [-depth * 0.4, depth * 0.4]) part(g, dim, 0.15, 3, 0.15, front - side * 2.1, 1.5, pz);
-        // Windows.
-        const cols = 3;
-        for (let r = 0; r < Math.floor((h - 3) / 2.2); r++) {
-          for (let c = 0; c < cols; c++) {
-            const lit = rng() < 0.6;
-            part(g, lit ? glow[Math.floor(rng() * 3)] : dim, 0.1, 1, 0.9, front - side * 0.26, 4.4 + r * 2.2, (c - 1) * (depth / 3.6));
-          }
-        }
-        if (rng() < 0.45) {
-          const s = new THREE.Mesh(new THREE.PlaneGeometry(4, 2), sign);
-          s.position.set(front - side * 0.6, h + 3.2, 0);
-          s.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
-          g.add(s);
-        }
-        add(g, -i * 10 - rng() * 1.5);
-      }
-      for (let i = 0; i < 7; i++) {
-        const g = new THREE.Group();
-        const x = side * (6.2 + rng() * 1.2), h = 1.6 + rng() * 1.4;
-        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.25, h, 6), cactus);
-        trunk.position.set(x, h / 2, 0);
-        const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, h * 0.45, 6), cactus);
-        arm.position.set(x + 0.45, h * 0.6, 0);
-        g.add(trunk, arm);
-        add(g, -i * 20 - 5 - rng() * 8);
-      }
-    }
-  }
-
-  private buildGun(): THREE.Mesh {
-    const metal = new THREE.MeshLambertMaterial({ color: 0x8a84b0 });
-    const grip = new THREE.MeshLambertMaterial({ color: 0x5a2b1a });
-    const glow = new THREE.MeshBasicMaterial({ color: NEON.cyan });
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.3, 10), metal);
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 0.02, -0.2);
-    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.07, 6), metal);
-    drum.rotation.x = Math.PI / 2;
-    drum.position.set(0, 0.005, -0.03);
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.05, 0.14), metal);
-    frame.position.set(0, -0.005, 0);
-    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.12, 0.045), grip);
-    handle.position.set(0, -0.07, 0.07);
-    handle.rotation.x = 0.35;
-    const strip = new THREE.Mesh(new THREE.BoxGeometry(0.006, 0.006, 0.28), glow);
-    strip.position.set(0, 0.042, -0.2);
-    const flash = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), new THREE.MeshBasicMaterial({ color: 0xfff0a0 }));
-    flash.position.set(0, 0.02, -0.38);
-    flash.visible = false;
-    this.gun.add(barrel, drum, frame, handle, strip, flash);
-    this.gun.position.set(0.22, -0.2, -0.5);
-    this.camera.add(this.gun);
-    return flash;
-  }
-
   setFov(horizontal169: number): void {
-    this.camera.fov = verticalFov(horizontal169);
+    this.baseFov = verticalFov(horizontal169);
+    this.camera.fov = this.baseFov;
     this.camera.updateProjectionMatrix();
+  }
+
+  /** Pixels a sphere of the given radius covers at target distance (used to keep heads hittable). */
+  pixelRadius(radius: number): number {
+    return (radius / TARGET_DISTANCE / Math.tan((this.baseFov * Math.PI) / 360)) * (window.innerHeight / 2);
   }
 
   resize(): void {
@@ -259,13 +157,27 @@ export class Stage {
     this.camera.updateProjectionMatrix();
   }
 
+  /** Gun recoil, muzzle flash and cylinder turn. */
   kick(): void {
-    this.recoil = 1;
-    this.gunFlash.visible = true;
+    this.gun.fire();
+    this.shake(0.25);
+  }
+
+  shake(amount: number): void {
+    this.shakeAmount = Math.min(1.5, this.shakeAmount + amount);
+  }
+
+  /** Brief zoom-in for emphasis (headshots). */
+  zoomPunch(): void {
+    this.punch = 1;
   }
 
   beat(): void {
     this.pulse = 1;
+  }
+
+  lightning(): void {
+    this.sky.lightning();
   }
 
   /** Screen position (px) of a world point, or null when behind the camera. */
@@ -275,24 +187,52 @@ export class Stage {
     return { x: (v.x * 0.5 + 0.5) * window.innerWidth, y: (-v.y * 0.5 + 0.5) * window.innerHeight };
   }
 
-  update(songTime: number, yaw: number, pitch: number, dt: number, deadEye: boolean): void {
-    const o = railPosition(songTime);
-    this.camera.position.set(o.x, o.y, o.z);
-    this.camera.rotation.set(pitch, yaw, 0, 'YXZ');
-    this.backdrop.position.z = o.z;
-    this.grid.position.z = Math.round(o.z / 2) * 2;
-    const edge = o.z + AHEAD_MARGIN;
-    for (const l of this.looping) {
-      const behind = (((edge - l.baseZ) % LOOP) + LOOP) % LOOP;
-      l.object.position.z = edge - behind;
+  update(f: Frame): void {
+    const o = railPosition(f.songTime);
+    const m = this.motion;
+    // Cart sway: a slow roll plus a small bump on every beat. Tiny, so it never moves the aim.
+    const bump = this.pulse * this.pulse * 0.012 * m;
+    const sway = Math.sin(f.songTime * 2.1) * 0.006 * m;
+    this.shakeAmount = Math.max(0, this.shakeAmount - f.dt * 5);
+    const s = this.shakeAmount * this.shakeAmount * 0.012 * m;
+    this.camera.position.set(o.x + sway, o.y - bump - f.fall, o.z);
+    this.camera.rotation.set(
+      f.pitch + (Math.random() - 0.5) * s + f.fall * 0.5,
+      f.yaw + (Math.random() - 0.5) * s,
+      sway * 0.6 + (Math.random() - 0.5) * s + f.fall * 0.25,
+      'YXZ',
+    );
+    this.punch = Math.max(0, this.punch - f.dt * 9);
+    const fov = this.baseFov - this.punch * 1.6 * m - (f.deadEye ? 4 : 0);
+    if (Math.abs(fov - this.camera.fov) > 0.01) {
+      this.camera.fov += (fov - this.camera.fov) * Math.min(1, f.dt * 14);
+      this.camera.updateProjectionMatrix();
     }
-    this.recoil = Math.max(0, this.recoil - dt * 9);
-    this.pulse = Math.max(0, this.pulse - dt * 4);
-    if (this.recoil < 0.7) this.gunFlash.visible = false;
-    this.gun.rotation.x = this.recoil * 0.35;
-    this.gun.position.z = -0.5 + this.recoil * 0.05;
-    this.bloom.strength = 0.5 + this.pulse * 0.3 + (deadEye ? 0.5 : 0);
-    (this.grid.material as THREE.Material).opacity = 0.45 + this.pulse * 0.4;
+
+    const travelled = this.lastZ - o.z;
+    this.lastZ = o.z;
+    this.pulse = Math.max(0, this.pulse - f.dt * 4);
+    this.sky.update(o.z, Math.abs(travelled) < 5 ? travelled : 0, f.dt, f.energy, this.pulse, f.deadEye ? 0.08 : 1);
+
+    this.ground.position.z = o.z;
+    this.textures.dirt.offset.y = -o.z / GROUND_TILE;
+    this.track.position.z = o.z - 100;
+    this.textures.track.offset.y = -o.z / 1.3;
+    this.cart.position.set(o.x, -bump * 2 - f.fall, o.z);
+    this.cart.rotation.z = sway * 1.5 + f.fall * 0.25;
+
+    const edge = o.z + AHEAD_MARGIN;
+    for (const p of this.town) {
+      const behind = (((edge - p.baseZ) % LOOP) + LOOP) % LOOP;
+      p.object.position.z = edge - behind;
+      if (p.spin) p.spin.rotation.z += f.dt * (0.6 + f.energy * 1.4);
+    }
+
+    // Lanterns breathe with the music; nothing near the targets pulses.
+    this.mats.lantern.color.copy(this.lanternBase).multiplyScalar(0.85 + this.pulse * 0.35 + f.energy * 0.2);
+    this.gun.update(f.dt, (f.yaw - this.lastYaw) / Math.max(f.dt, 0.001));
+    this.lastYaw = f.yaw;
+    this.bloom.strength = 0.65 + (f.deadEye ? 0.35 : 0);
   }
 
   /** Renders the given objects once so their shaders are compiled before the song starts. */

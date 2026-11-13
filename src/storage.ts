@@ -1,5 +1,7 @@
 import type { GameId } from './input/sensitivity';
 import type { Rank } from './game/scoring';
+import type { PaletteId } from './world/palette';
+import type { Quality } from './world/stage';
 
 export interface CrosshairSettings {
   size: number;
@@ -21,6 +23,11 @@ export interface Settings {
   offsetMs: number;
   musicVolume: number;
   sfxVolume: number;
+  /** Target colours: default or a red/green-safe alternative. */
+  palette: PaletteId;
+  quality: Quality;
+  /** 0..1 strength of camera shake, sway and zoom punches. */
+  motion: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -28,10 +35,13 @@ export const DEFAULT_SETTINGS: Settings = {
   degPerCount: 0.044,
   dpi: 800,
   fov: 103,
-  crosshair: { size: 7, thickness: 2, gap: 3, color: '#00ffe1', dot: true },
+  crosshair: { size: 7, thickness: 2, gap: 3, color: '#ffffff', dot: true },
   offsetMs: 0,
   musicVolume: 0.8,
   sfxVolume: 0.6,
+  palette: 'default',
+  quality: 'high',
+  motion: 1,
 };
 
 const SETTINGS_KEY = 'beatwest.settings';

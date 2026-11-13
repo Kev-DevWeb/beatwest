@@ -10,6 +10,7 @@ export class AudioPlayer {
   /** Calibration offset in real seconds. */
   offset = 0;
   ended = false;
+  private musicVolume = 1;
 
   constructor() {
     this.ctx = new AudioContext({ latencyHint: 'interactive' });
@@ -23,6 +24,8 @@ export class AudioPlayer {
   }
 
   setVolumes(music: number, sfx: number): void {
+    this.musicVolume = music;
+    this.musicGain.gain.cancelScheduledValues(this.ctx.currentTime);
     this.musicGain.gain.value = music;
     this.sfxGain.gain.value = sfx;
   }
@@ -55,6 +58,8 @@ export class AudioPlayer {
     await this.ctx.resume();
     this.rate = rate;
     this.ended = false;
+    this.musicGain.gain.cancelScheduledValues(this.ctx.currentTime);
+    this.musicGain.gain.value = this.musicVolume;
     const source = this.ctx.createBufferSource();
     source.buffer = buffer;
     source.playbackRate.value = rate;
@@ -81,6 +86,16 @@ export class AudioPlayer {
       this.source.disconnect();
       this.source = null;
     }
+  }
+
+  /** The record grinding to a halt when a run is failed. */
+  windDown(seconds = 1): void {
+    if (!this.source) return;
+    const now = this.ctx.currentTime;
+    this.source.playbackRate.setValueAtTime(this.rate, now);
+    this.source.playbackRate.linearRampToValueAtTime(this.rate * 0.3, now + seconds);
+    this.musicGain.gain.setValueAtTime(this.musicVolume, now);
+    this.musicGain.gain.linearRampToValueAtTime(0.0001, now + seconds);
   }
 
   /** Low-pass the music (Dead Eye). */

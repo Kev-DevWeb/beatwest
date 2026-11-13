@@ -1,3 +1,7 @@
+import '@fontsource/rye/400.css';
+import '@fontsource/chakra-petch/400.css';
+import '@fontsource/chakra-petch/600.css';
+import '@fontsource/chakra-petch/700.css';
 import './ui/styles.css';
 import type { Analysis } from './audio/analyze';
 import { renderDemoTrack } from './audio/demoTrack';
@@ -11,6 +15,7 @@ import { bestScore, loadSettings, saveScore, saveSettings, scoreKey } from './st
 import { Hud, renderCrosshair } from './ui/hud';
 import { Calibration, initSettings, showResults } from './ui/screens';
 import { Stage } from './world/stage';
+import { redrawSigns } from './world/textures';
 
 type Screen = 'menu' | 'settings' | 'calibration' | 'pause' | 'results' | 'none';
 interface Song { name: string; buffer: AudioBuffer; analysis: Analysis }
@@ -18,7 +23,9 @@ interface Song { name: string; buffer: AudioBuffer; analysis: Analysis }
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>('game');
 const settings = loadSettings();
-const stage = new Stage(canvas);
+const stage = new Stage(canvas, settings.quality);
+// Signs are painted on canvases: repaint them once the display font is available.
+void Promise.all([document.fonts.load('76px Rye'), document.fonts.load('600 22px "Chakra Petch"')]).then(redrawSigns);
 const hud = new Hud();
 
 let player: AudioPlayer | null = null;
@@ -29,7 +36,13 @@ let chart: Chart | null = null;
 let session: Session | null = null;
 let difficulty: Difficulty = 'normal';
 let mods: ModId[] = [];
-let autoplay = new URLSearchParams(location.search).has('autoplay');
+const query = new URLSearchParams(location.search);
+let autoplay = query.has('autoplay');
+// Browsers throttle requestAnimationFrame in windows that are not in view; `?timer` drives the
+// loop from a timer instead so automated checks still run at full speed.
+const schedule: (f: (now: number) => void) => void = query.has('timer')
+  ? (f) => void setTimeout(() => f(performance.now()), 8)
+  : (f) => void requestAnimationFrame(f);
 let screen: Screen = 'menu';
 let paused = false;
 let finishedAt = 0;
@@ -56,6 +69,7 @@ function audio(): { player: AudioPlayer; sfx: Sfx } {
 
 function applySettings(): void {
   stage.setFov(settings.fov);
+  stage.motion = settings.motion;
   renderCrosshair($('crosshair'), settings.crosshair);
   if (player) {
     player.setVolumes(settings.musicVolume, settings.sfxVolume);
@@ -122,9 +136,10 @@ function renderSetup(): void {
     ? active.map((m) => `${m.name}: ${m.description} (×${m.multiplier})`).join(' · ')
     : 'Sin mods. Pasa el cursor sobre cada uno para ver qué hace.';
   const best = bestScore(scoreKey(song.analysis.hash, difficulty, modsKey(mods)));
+  $('best-score').textContent = best ? best.score.toLocaleString('es') : '—';
   $('best').textContent = best
-    ? `Tu récord: ${best.score.toLocaleString('es')} · ${(best.accuracy * 100).toFixed(2)}% · rango ${best.rank}`
-    : 'Aún no tienes récord con esta combinación.';
+    ? `Tu récord · ${(best.accuracy * 100).toFixed(2)}% · rango ${best.rank}`
+    : 'Nadie la ha cobrado todavía';
   $('setup').classList.remove('hidden');
 }
 
@@ -135,7 +150,9 @@ async function startGame(): Promise<void> {
   const { player, sfx } = audio();
   session?.dispose();
   chart = generateChart(song.analysis, difficulty);
-  session = new Session(stage, player, sfx, hud, chart, settings, mods, autoplay);
+  const { energy, energyRate } = song.analysis;
+  const energyAt = (t: number) => energy[Math.max(0, Math.min(energy.length - 1, Math.floor(t * energyRate)))] ?? 0;
+  session = new Session(stage, player, sfx, hud, chart, settings, mods, autoplay, energyAt);
   paused = false;
   finishedAt = 0;
   show('none');
@@ -290,29 +307,35 @@ document.querySelectorAll('[data-back]').forEach((b) => b.addEventListener('clic
 // -------------------------------------------------------------------- loop
 
 let last = performance.now();
+let frameMs = 16;
+let worstMs = 0;
 function frame(now: number): void {
   const dt = Math.min(0.1, (now - last) / 1000);
+  frameMs += (now - last - frameMs) * 0.05;
+  worstMs = Math.max(worstMs * 0.995, now - last);
   last = now;
   if (session) {
     if (!paused) session.update();
     if (session.finished && !finishedAt) finishedAt = now;
-    if (finishedAt && now - finishedAt > 900 && screen === 'none') endGame();
+    if (finishedAt && now - finishedAt > 1300 && screen === 'none') endGame();
   } else {
     // Idle fly-through behind the menus.
-    stage.update(now / 4000, Math.sin(now / 5000) * 0.25, 0.08, dt, false);
+    stage.update({ songTime: now / 2500, yaw: Math.sin(now / 6000) * 0.22, pitch: 0.1, dt, deadEye: false, energy: 0.35 + 0.25 * Math.sin(now / 3000), fall: 0 });
   }
   stage.render();
-  requestAnimationFrame(frame);
+  schedule(frame);
 }
 
 applySettings();
 show('menu');
-requestAnimationFrame(frame);
+schedule(frame);
 
 // Small hook for automated checks and debugging from the console.
 (window as unknown as { beatwest: unknown }).beatwest = {
+  stage,
   get state() {
     return {
+      frameMs: Math.round(frameMs * 10) / 10, worstMs: Math.round(worstMs),
       screen, paused, song: song?.name ?? null, bpm: song?.analysis.bpm ?? null,
       notes: chart?.notes.length ?? 0,
       songTime: player && session ? player.songTime() : null,
