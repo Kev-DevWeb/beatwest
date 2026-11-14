@@ -75,8 +75,8 @@ export interface ScoreRecord {
   date: number;
 }
 
-/** `v2`: charts were rebalanced, so earlier records are not comparable. */
-export const scoreKey = (hash: number, difficulty: string, mods: string) => `v2:${hash}:${difficulty}:${mods}`;
+/** `v3`: charts were rebalanced and gained reload interludes, so earlier records are not comparable. */
+export const scoreKey = (hash: number, difficulty: string, mods: string) => `v3:${hash}:${difficulty}:${mods}`;
 
 export function bestScore(key: string): ScoreRecord | null {
   const list = read<Record<string, ScoreRecord[]>>(SCORES_KEY, {})[key];

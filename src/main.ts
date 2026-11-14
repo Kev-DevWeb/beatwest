@@ -237,8 +237,7 @@ document.addEventListener('pointerlockchange', () => {
 document.addEventListener('keydown', (e) => {
   if (screen === 'calibration' && e.code === 'Space') { e.preventDefault(); calibration?.tap(); return; }
   if (screen === 'none' && session && !paused) {
-    if (e.code === 'KeyR') session.reload();
-    else if (e.code === 'KeyQ' || e.code === 'Space') { e.preventDefault(); session.triggerDeadEye(); }
+    if (e.code === 'KeyQ' || e.code === 'Space') { e.preventDefault(); session.triggerDeadEye(); }
     else if (e.code === 'Escape') pause();
   } else if (screen === 'pause' && e.code === 'Escape') {
     void resume();

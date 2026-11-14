@@ -1,5 +1,5 @@
 import type { CrosshairSettings } from '../storage';
-import { CHAMBERS } from '../game/revolver';
+import { ROUNDS } from '../chart/types';
 
 const $ = <T extends Element = HTMLElement>(id: string) => document.getElementById(id) as unknown as T;
 
@@ -29,7 +29,6 @@ export class Hud {
   private countdownEl = $('h-countdown');
   private bannerEl = $('h-banner');
   private arrowEl = $('h-arrow');
-  private reloadEl = $('h-reload');
   private popups = $('popups');
   private flashEl = $('flash');
   private mods = $('h-mods');
@@ -37,7 +36,7 @@ export class Hud {
   private bannerTimer = 0;
 
   constructor() {
-    this.ammo.innerHTML = Array.from({ length: CHAMBERS }, () => '<i></i>').join('');
+    this.ammo.innerHTML = Array.from({ length: ROUNDS }, () => '<i></i>').join('');
     const track = $<SVGCircleElement>('h-deadeye-track');
     for (const c of [track, this.deadEye]) {
       c.setAttribute('r', String(ARC_RADIUS));
@@ -99,11 +98,15 @@ export class Hud {
     });
   }
 
-  setAmmo(count: number, reloading: boolean): void {
-    this.set('ammo', count + (reloading ? 100 : 0), () => {
-      [...this.ammo.children].forEach((el, i) => el.classList.toggle('spent', i >= count));
-      this.ammo.classList.toggle('reloading', reloading);
-      this.ammo.classList.toggle('empty', count === 0);
+  /** Cylinder filling up during a reload interlude. `loaded` rounds are in; null hides it. */
+  setReload(loaded: number | null): void {
+    this.set('reload', loaded === null ? -1 : loaded, () => {
+      this.ammo.classList.toggle('show', loaded !== null);
+      if (loaded === null) return;
+      [...this.ammo.children].forEach((el, i) => {
+        el.classList.toggle('spent', i >= loaded);
+        el.classList.toggle('new', i === loaded - 1);
+      });
     });
   }
 
@@ -161,17 +164,6 @@ export class Hud {
     this.set('arrow', key, () => {
       this.arrowEl.classList.toggle('show', angle !== null);
       if (angle !== null) this.arrowEl.style.transform = `rotate(${-angle}rad) translateX(170px)`;
-    });
-  }
-
-  /** Ring closing on the ammo pips: press R when it lands. `fraction` 1 (far) -> 0 (now); null hides it. */
-  reloadCue(fraction: number | null): void {
-    const key = fraction === null ? 'off' : Math.round(fraction * 60);
-    this.set('reload', key, () => {
-      this.reloadEl.classList.toggle('show', fraction !== null);
-      if (fraction === null) return;
-      this.reloadEl.classList.toggle('now', fraction < 0.07);
-      this.reloadEl.style.transform = `scale(${1 + fraction * 0.9})`;
     });
   }
 

@@ -1,8 +1,7 @@
 import * as THREE from 'three';
 import type { AudioPlayer } from '../audio/player';
 import type { Sfx } from '../audio/sfx';
-import { beatDistance, nextGrid } from '../audio/tempo';
-import { isShot, type Chart, type Difficulty, type Note } from '../chart/types';
+import { isShot, ROUNDS, type Chart, type Difficulty, type Note } from '../chart/types';
 import type { Settings } from '../storage';
 import type { Hud } from '../ui/hud';
 import { applyTargetPalette, Target } from '../world/entities';
@@ -14,7 +13,6 @@ import { CHARGE, DeadEye } from './deadEye';
 import { aimDirection, anglesTo, raySphere } from './hit';
 import { judge, JUDGEMENT_LABEL, judgeTracking, WINDOWS, type Judgement } from './judge';
 import { modMultiplier, playbackRate, type ModId } from './mods';
-import { CHAMBERS, reloadClicks, Revolver } from './revolver';
 import { Score } from './scoring';
 
 const DEG = Math.PI / 180;
@@ -38,7 +36,6 @@ export interface Result {
 /** One playthrough of a chart: spawns targets, judges shots, tracks score/health and drives HUD and effects. */
 export class Session {
   readonly score: Score;
-  readonly revolver = new Revolver();
   readonly deadEye = new DeadEye();
   private targets: Target[] = [];
   private covers: Covers;
@@ -61,10 +58,12 @@ export class Session {
   private firstSpawn: number;
   private failedAt = -1;
   private lastSong = -Infinity;
-  /** Rounds still clicking into the cylinder: song times of each click. */
-  private loading: { clicks: number[]; next: number; from: number; perfect: boolean } | null = null;
-  private reloadIdx = 0;
-  private botReload = 0;
+  /** Reload interlude playback: which one is next and how far through it we are. */
+  private interlude = 0;
+  private reloading = false;
+  private roundsHeard = 0;
+  private roundsShown = 0;
+  private closeHeard = false;
   finished: Result | null = null;
 
   constructor(
@@ -142,7 +141,7 @@ export class Session {
   fire(when?: number): void {
     if (this.finished) return;
     const t = when ?? this.player.songTime();
-    if (!this.revolver.fire(t)) { this.sfx.empty(); return; }
+    if (this.reloading) { this.sfx.empty(); return; }      // cylinder is open
     this.score.shotsFired++;
     this.stage.kick();
     this.sfx.shot();
@@ -187,51 +186,53 @@ export class Session {
   }
 
   /**
-   * Reloading is part of the song: on a beat (or a reload cue) it is instant; otherwise the gun
-   * is ready on the next half-beat. Either way every round clicks in on a subdivision of the beat.
-   * @param when song time of the press; defaults to now (the bot passes the exact cue).
+   * Reload interludes: stretches the chart leaves empty, where the revolver reloads by itself.
+   * Each round clicks into the cylinder on a subdivision of the beat and it shuts on a beat.
    */
-  reload(when?: number): void {
-    if (this.finished) return;
-    const t = when ?? this.player.songTime();
-    const { bpm, phase } = this.chart;
-    let cue = Infinity;
-    for (const r of this.chart.reloads) if (Math.abs(r - t) < Math.abs(cue - t)) cue = r;
-    const error = Math.min(Math.abs(beatDistance(t, bpm, phase)), Math.abs(cue - t)) / this.rate;
-    const missing = CHAMBERS - this.revolver.ammo;
-    const slot = nextGrid(t + 0.2 * this.beat, phase, this.beat / 2);
-    const { result, readyAt } = this.revolver.reload(t, error, slot);
-    if (result === 'full' || result === 'busy') return;
-
-    const perfect = result === 'perfect';
-    const clicks = reloadClicks(t, readyAt, missing, this.beat, phase, perfect);
-    this.sfx.reloadOpen();
-    clicks.forEach((c, i) => this.sfx.bullet(this.player.contextTimeAt(c), CHAMBERS - missing + i));
-    this.sfx.reloadClose(perfect ? this.player.ctx.currentTime : this.player.contextTimeAt(readyAt), perfect);
-    this.loading = { clicks, next: 0, from: CHAMBERS - missing, perfect };
-    this.stage.gun.startReload(perfect ? 0 : (readyAt - t) / this.rate);
-    // Spent casings drop out of the cylinder.
-    this.fx.shatter(this.stage.gun.breech(), new THREE.Color(0xc9963a), missing, new THREE.Vector3(-0.25, 0, 0), 0.4);
-    if (perfect) {
-      this.deadEye.charge(0.03, t);
-      this.score.bonus(50);
-      this.hud.judgement('RECARGA PERFECTA', 'gold');
-    } else {
-      this.hud.judgement('RECARGANDO', 'ok');
+  private playInterlude(t: number): void {
+    const il = this.chart.interludes[this.interlude];
+    const gun = this.stage.gun;
+    const openAt = il ? il.start - 0.5 * this.beat : Infinity;
+    if (!il || t < openAt) {
+      this.reloading = false;
+      gun.setOpen(0);
+      this.hud.setReload(null);
+      return;
     }
-  }
+    if (!this.reloading) {
+      this.reloading = true;
+      this.sfx.reloadOpen();
+      // Spent casings drop out of the cylinder.
+      this.fx.shatter(gun.breech(), new THREE.Color(0xc9963a), ROUNDS, new THREE.Vector3(-0.25, 0, 0), 0.4);
+    }
+    // Sounds are scheduled on the audio clock a moment before they are due, never far ahead,
+    // so nothing is left ringing after a pause, retry or quit.
+    const soon = 0.25 * this.rate, stale = 0.12 * this.rate;
+    while (this.roundsHeard < ROUNDS && il.start + this.roundsHeard * il.step - t < soon) {
+      const at = il.start + this.roundsHeard * il.step;
+      if (t - at < stale) this.sfx.bullet(this.player.contextTimeAt(at), this.roundsHeard);
+      this.roundsHeard++;
+    }
+    if (!this.closeHeard && il.close - t < soon) {
+      this.closeHeard = true;
+      if (t - il.close < stale) this.sfx.reloadClose(this.player.contextTimeAt(il.close), true);
+    }
+    const loaded = Math.max(0, Math.min(ROUNDS, Math.floor((t - il.start) / il.step + 1e-6) + 1));
+    while (this.roundsShown < loaded) { this.roundsShown++; gun.loadRound(); }
+    this.hud.setReload(this.roundsShown);
 
-  /** How close the next reload cue is, 1 (far) -> 0 (now), or null when there is nothing to show. */
-  private reloadCue(t: number): number | null {
-    if (this.revolver.ammo === CHAMBERS || t < this.revolver.lockedUntil) return null;
-    const reloads = this.chart.reloads;
-    while (this.reloadIdx < reloads.length && reloads[this.reloadIdx] < t - 0.12 * this.rate) this.reloadIdx++;
-    const lead = 2 * this.beat;
-    const cue = reloads[this.reloadIdx];
-    if (cue !== undefined && cue - t <= lead) return Math.max(0, (cue - t) / lead);
-    // Out of rounds with no cue nearby: any beat will do, so count down to the next one.
-    if (this.revolver.ammo === 0) return Math.max(0, (nextGrid(t, this.chart.phase, this.beat) - t) / this.beat);
-    return null;
+    if (t >= il.close) {
+      gun.snapShut();
+      this.stage.shake(0.35);
+      this.hud.setReload(null);
+      this.reloading = false;
+      this.interlude++;
+      this.roundsHeard = this.roundsShown = 0;
+      this.closeHeard = false;
+    } else {
+      // Swing open over the half-beat before the first round.
+      gun.setOpen(Math.min(1, (t - openAt) / (0.45 * this.beat)));
+    }
   }
 
   triggerDeadEye(): void {
@@ -315,7 +316,9 @@ export class Session {
       while (this.coverNext < notes.length && notes[this.coverNext].time - t < COVER_LEAD * this.rate) {
         this.covers.ensure(notes[this.coverNext++], this.scale, now);
       }
-      while (this.next < notes.length && notes[this.next].time - approach <= t) {
+      this.playInterlude(t);
+      // Nothing appears while the cylinder is open (matters with Double Time, where targets show earlier).
+      while (!this.reloading && this.next < notes.length && notes[this.next].time - approach <= t) {
         const target = new Target(notes[this.next++], this.scale, now);
         this.targets.push(target);
         this.stage.dynamic.add(target.group);
@@ -392,20 +395,10 @@ export class Session {
       this.hud.setScore(this.score.score, this.score.accuracy);
       this.hud.setCombo(this.score.combo, this.score.gold);
       this.hud.setHealth(this.health / 100);
-      if (this.loading) {
-        const l = this.loading;
-        while (l.next < l.clicks.length && l.clicks[l.next] <= t) { l.next++; this.stage.gun.loadRound(); }
-        if (l.next >= l.clicks.length) this.loading = null;
-      }
-      const shown = this.loading && !this.loading.perfect
-        ? Math.min(this.revolver.ammo, this.loading.from + this.loading.next)
-        : this.revolver.ammo;
-      this.hud.setAmmo(shown, t < this.revolver.lockedUntil);
-      this.hud.reloadCue(this.reloadCue(t));
       this.hud.setDeadEye(this.deadEye.meter, deadEyeOn, this.deadEye.remaining(t, this.beat));
       this.hud.setProgress(t / this.chart.duration);
       this.hud.countdown(this.countdownText(t));
-      this.hud.message(this.revolver.ammo === 0 ? 'RECARGA [R]' : '');
+      this.hud.message(this.reloading ? 'RECARGANDO' : '');
     }
 
     const perfect = WINDOWS.perfect * this.rate;
@@ -468,16 +461,6 @@ export class Session {
       this.yaw += (a.yaw - this.yaw) * k;
       this.pitch += (a.pitch - this.pitch) * k;
     }
-    // Reload on the cues the chart marks, exactly on time.
-    const reloads = this.chart.reloads;
-    while (this.botReload < reloads.length && reloads[this.botReload] <= t) {
-      const cue = reloads[this.botReload++];
-      // Shots due before the cue are fired first, so the count of rounds is right.
-      for (const due of this.targets) {
-        if (due.alive && isShot(due.note) && due.note.time < cue) this.botFire(due);
-      }
-      this.reload(cue);
-    }
     // Fire every shot that came due since the last frame, exactly on its beat, so the bot's
     // result does not depend on the frame rate.
     for (const due of this.targets) {
@@ -487,7 +470,6 @@ export class Session {
 
   private botFire(target: Target): void {
     const when = target.note.time;
-    if (this.revolver.ammo === 0) this.revolver.reload(when, 0, when);
     const a = anglesTo(railPosition(when), target.aim);
     this.yaw = a.yaw;
     this.pitch = a.pitch;
@@ -499,7 +481,8 @@ export class Session {
     this.player.setMuffled(false);
     this.hud.setDeadEyeFx(false);
     this.hud.arrow(null);
-    this.hud.reloadCue(null);
+    this.hud.setReload(null);
+    this.stage.gun.setOpen(0);
     this.hud.countdown('');
     this.hud.message('');
     this.lead.visible = false;

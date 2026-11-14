@@ -49,13 +49,6 @@ export class Score {
     return points;
   }
 
-  /** Flat points outside the judgement counts (e.g. a perfect reload). */
-  bonus(points: number): number {
-    const p = Math.round(points * this.modMultiplier);
-    this.score += p;
-    return p;
-  }
-
   miss(): void {
     this.counts.miss++;
     this.breakCombo();

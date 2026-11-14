@@ -16,10 +16,23 @@ export interface Note {
   pitch2: number;
 }
 
+/** Rounds in the cylinder: how many clicks a reload interlude has. */
+export const ROUNDS = 6;
+
+/** A reload interlude: one round clicks in every `step` from `start`, the cylinder shuts at `close`. */
+export interface Interlude {
+  start: number;
+  step: number;
+  close: number;
+}
+
+/** Song times at which each round goes into the cylinder. */
+export const interludeClicks = (i: Interlude): number[] => Array.from({ length: ROUNDS }, (_, k) => i.start + k * i.step);
+
 export interface Chart {
   notes: Note[];
-  /** Song times (on the half-beat grid) cued as the moment to reload. */
-  reloads: number[];
+  /** Stretches of the song with nothing to shoot, where the revolver reloads by itself. */
+  interludes: Interlude[];
   bpm: number;
   phase: number;
   duration: number;

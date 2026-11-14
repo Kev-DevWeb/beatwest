@@ -176,15 +176,12 @@ output { color: var(--sun); font-weight: 600; }
 #h-arc.ready .fill { stroke: var(--gold); stroke-width: 4.5; filter: drop-shadow(0 0 6px var(--gold)); animation: ready 0.45s ease-in-out infinite alternate; }
 #h-arc.active .fill { stroke: var(--red); stroke-width: 4.5; filter: drop-shadow(0 0 6px var(--red)); }
 @keyframes ready { from { opacity: 0.55; } to { opacity: 1; } }
-.h-ammo { position: absolute; top: 74px; left: 0; transform: translateX(-50%); display: flex; gap: 5px; }
-.h-ammo i { width: 7px; height: 7px; border-radius: 50%; background: var(--paper); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6); }
-.h-ammo i.spent { background: transparent; box-shadow: inset 0 0 0 1.5px rgba(243, 231, 218, 0.45); }
-.h-ammo.reloading { opacity: 0.35; }
-.h-ammo.empty i { box-shadow: inset 0 0 0 1.5px var(--red); }
-#h-reload { position: absolute; left: -32px; top: 45px; width: 64px; height: 64px; border: 2px solid var(--gold); border-radius: 50%; opacity: 0; }
-#h-reload.show { opacity: 0.85; }
-#h-reload.now { border-width: 4px; opacity: 1; box-shadow: 0 0 14px var(--gold); }
-#h-reload span { position: absolute; left: 50%; top: -22px; transform: translateX(-50%); font-weight: 700; font-size: 14px; color: var(--gold); text-shadow: 0 2px 4px #000; }
+.h-ammo { position: absolute; top: 70px; left: 0; transform: translateX(-50%); display: flex; gap: 8px; opacity: 0; transition: opacity 0.12s; }
+.h-ammo.show { opacity: 1; }
+.h-ammo i { width: 12px; height: 12px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 0 8px rgba(255, 210, 74, 0.7); }
+.h-ammo i.spent { background: transparent; box-shadow: inset 0 0 0 2px rgba(243, 231, 218, 0.5); }
+.h-ammo i.new { animation: round 0.16s ease-out; }
+@keyframes round { from { transform: scale(1.9); } to { transform: scale(1); } }
 #h-judge { position: absolute; top: 94px; left: 0; transform: translateX(-50%); white-space: nowrap; font-weight: 700; font-size: 17px; letter-spacing: 0.14em; opacity: 0; text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9); }
 #h-judge.show { animation: judge 0.55s ease-out forwards; }
 #h-judge.gold { color: var(--gold); font-size: 20px; }
@@ -204,7 +201,7 @@ output { color: var(--sun); font-weight: 600; }
 #h-banner { position: absolute; left: 0; right: 0; top: 13%; text-align: center; font-family: var(--display); font-size: clamp(24px, 4vw, 40px); color: var(--gold); text-shadow: 0 3px 0 #3a1a08, 0 0 30px rgba(255, 190, 60, 0.8); opacity: 0; }
 #h-banner.show { animation: banner 1.4s ease-out forwards; }
 @keyframes banner { 0% { opacity: 0; letter-spacing: 0.5em; } 12% { opacity: 1; letter-spacing: 0.08em; } 75% { opacity: 1; } 100% { opacity: 0; } }
-#h-message { position: absolute; left: 0; right: 0; top: calc(50% + 126px); text-align: center; font-size: 14px; font-weight: 700; letter-spacing: 0.24em; color: var(--red); text-shadow: 0 2px 6px #000; }
+#h-message { position: absolute; left: 0; right: 0; top: calc(50% + 126px); text-align: center; font-size: 14px; font-weight: 700; letter-spacing: 0.24em; color: var(--gold); text-shadow: 0 2px 6px #000; }
 
 .h-combo { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; text-shadow: 0 3px 10px rgba(0, 0, 0, 0.85); transition: opacity 0.2s; }
 .h-combo.idle b, .h-combo.idle span, .h-combo.idle small { opacity: 0.25; }

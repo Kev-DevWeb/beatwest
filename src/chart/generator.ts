@@ -1,14 +1,17 @@
 import type { Analysis } from '../audio/analyze';
-import { beatDistance } from '../audio/tempo';
+import { beatDistance, nextGrid } from '../audio/tempo';
 import { makeRng } from './rng';
-import type { Chart, Difficulty, Note, NoteKind } from './types';
+import { ROUNDS, type Chart, type Difficulty, type Interlude, type Note, type NoteKind } from './types';
 
 const DEG = Math.PI / 180;
 
 export const BOUNDS = { yaw: 30 * DEG, pitchMin: 0, pitchMax: 14 * DEG };
 /** Songs start with this much quiet time so the player can settle in. */
 export const LEAD_IN = 2;
-export const MAX_SHOTS_WITHOUT_REST = 6;
+/** Longest unbroken run of shots (gaps under a beat) before a one-beat rest for the hands. */
+export const MAX_RUN = 8;
+/** Beats before an interlude starts with no shot due (the cylinder is already swinging open). */
+export const INTERLUDE_LEAD_BEATS = 0.5;
 /** Longest run of rapid-fire burst targets before a half-beat breather. */
 export const MAX_BURST = 4;
 
@@ -29,8 +32,8 @@ interface Tuning {
 export const TUNING: Record<Difficulty, Tuning> = {
   easy: { minStrength: 0.5, minGapBeats: 1, minGapSec: 0.4, approach: 1.3, angularSpeed: 25 * DEG, maxFlick: 18 * DEG, civilianChance: 0, maxPerBar: 99 },
   normal: { minStrength: 0.25, minGapBeats: 0.5, minGapSec: 0.2, approach: 1.1, angularSpeed: 34 * DEG, maxFlick: 22 * DEG, civilianChance: 0.35, maxPerBar: 5 },
-  hard: { minStrength: 0.22, minGapBeats: 0.5, minGapSec: 0.19, approach: 1.0, angularSpeed: 40 * DEG, maxFlick: 26 * DEG, civilianChance: 0.45, maxPerBar: 7 },
-  extreme: { minStrength: 0.14, minGapBeats: 0.25, minGapSec: 0.1, approach: 0.85, angularSpeed: 52 * DEG, maxFlick: 32 * DEG, civilianChance: 0.55, maxPerBar: 10 },
+  hard: { minStrength: 0.22, minGapBeats: 0.5, minGapSec: 0.19, approach: 1.0, angularSpeed: 40 * DEG, maxFlick: 26 * DEG, civilianChance: 0.45, maxPerBar: 6 },
+  extreme: { minStrength: 0.14, minGapBeats: 0.25, minGapSec: 0.1, approach: 0.85, angularSpeed: 52 * DEG, maxFlick: 32 * DEG, civilianChance: 0.55, maxPerBar: 9 },
 };
 
 interface Draft { kind: NoteKind; time: number; duration: number }
@@ -80,38 +83,44 @@ export function generateChart(analysis: Analysis, difficulty: Difficulty): Chart
     }
     if (fits) kept.splice(idx, 0, c.time);
   }
-  const picked = kept.map((time) => ({ time }));
+  // 1b. Reload interludes. The revolver reloads by itself in stretches with nothing to shoot:
+  //     one every 6-12 bars, placed where the fewest shots are lost (natural breaks win).
+  //     Rounds click in on eighths or sixteenths, whichever is nearer 0.2 s; the cylinder
+  //     shuts on a beat, and the next target only appears once it has.
+  const bar = 4 * beat;
+  const stepLen = Math.abs(beat / 2 - 0.2) <= Math.abs(beat / 4 - 0.2) ? beat / 2 : beat / 4;
+  const lapse = Math.ceil((ROUNDS * stepLen) / beat - 1e-9) * beat;
+  const clearFrom = (start: number) => start - INTERLUDE_LEAD_BEATS * beat;
+  const clearTo = (start: number) => start + lapse + tune.approach;
+  const interludes: Interlude[] = [];
+  let prev = kept.length ? kept[0] : LEAD_IN;
+  for (;;) {
+    let best = -1, bestCost = Infinity;
+    for (let b = nextGrid(prev + 6 * bar, analysis.phase, beat); b <= prev + 12 * bar; b += beat) {
+      if (clearTo(b) > analysis.duration - 2 * bar) break;
+      const lost = kept.filter((t) => t > clearFrom(b) && t < clearTo(b)).length;
+      const cost = lost + meanEnergy(analysis, b, b + lapse);
+      if (cost < bestCost - 1e-9) { bestCost = cost; best = b; }
+    }
+    if (best < 0) break;
+    interludes.push({ start: best, step: stepLen, close: best + lapse });
+    prev = best + lapse;
+  }
+  const inInterlude = (t: number) => interludes.some((i) => t > clearFrom(i.start) + 1e-9 && t < clearTo(i.start) - 1e-9);
 
-  // 2. Guarantee a pause of at least one beat every six shots (the revolver holds six),
-  //    and a half-beat breather after every full burst.
+  // 2. Breathing room: a one-beat rest after every long run, half a beat after a full burst.
   const burstGap = Math.max(beat * 0.3, 0.2);
   const shots: number[] = [];
-  let sinceRest = 0, run = 1;
-  for (const p of picked) {
-    const gap = shots.length ? p.time - shots[shots.length - 1] : Infinity;
-    if (gap >= beat) sinceRest = 0;
-    else if (sinceRest >= MAX_SHOTS_WITHOUT_REST) continue;
+  let run = 1, sinceRest = 0;
+  for (const time of kept) {
+    if (inInterlude(time)) continue;
+    const gap = shots.length ? time - shots[shots.length - 1] : Infinity;
+    if (gap >= beat * 0.99) sinceRest = 0;
+    else if (sinceRest >= MAX_RUN) continue;
     if (run >= MAX_BURST && gap < 0.45 * beat) continue;
     run = gap <= burstGap ? run + 1 : 1;
-    shots.push(p.time);
+    shots.push(time);
     sinceRest++;
-  }
-
-  // 2b. Reload cues: at a rest, if the six rounds would not last through the next run of
-  //     shots, mark a half-beat in that rest as the moment to reload.
-  const reloads: number[] = [];
-  let fired = 0;
-  for (let i = 0; i + 1 < shots.length; i++) {
-    fired++;
-    const gap = shots[i + 1] - shots[i];
-    if (gap < beat) continue;
-    let ahead = 1;
-    while (i + ahead + 1 < shots.length && shots[i + ahead + 1] - shots[i + ahead] < beat) ahead++;
-    if (fired + ahead > MAX_SHOTS_WITHOUT_REST) {
-      const mid = shots[i] + Math.min(gap / 2, beat);
-      reloads.push(analysis.phase + Math.round((mid - analysis.phase) / (beat / 2)) * (beat / 2));
-      fired = 0;
-    }
   }
 
   // 3. Runs of three or more shots faster than ~5 per second become bursts.
@@ -126,9 +135,11 @@ export function generateChart(analysis: Analysis, difficulty: Difficulty): Chart
   // 4. Fill long gaps: drones to track where the music keeps going, civilians as decoys.
   const overall = meanEnergy(analysis, 0, analysis.duration);
   const extras: Draft[] = [];
-  const edges = [LEAD_IN - beat, ...shots, end];
+  const zones = interludes.map((i) => [clearFrom(i.start), clearTo(i.start)]);
+  const edges = [LEAD_IN - beat, ...shots, ...zones.flat(), end].sort((a, b) => a - b);
   for (let i = 0; i + 1 < edges.length; i++) {
     const from = edges[i], to = edges[i + 1];
+    if (zones.some(([a, b]) => from >= a - 1e-9 && to <= b + 1e-9)) continue;   // inside an interlude
     const gapBeats = (to - from) / beat;
     if (gapBeats >= 3.5 && meanEnergy(analysis, from, to) >= overall * 0.25) {
       let t = from + beat;
@@ -138,7 +149,8 @@ export function generateChart(analysis: Analysis, difficulty: Difficulty): Chart
         extras.push({ kind: 'drone', time: t, duration });
         t += duration + beat;
       }
-    } else if (gapBeats >= 1.4 && i > 0 && rng() < tune.civilianChance) {
+    } else if (gapBeats >= 0.95 && i > 0 && rng() < tune.civilianChance * (gapBeats >= 1.4 ? 1 : 0.2)) {
+      // Decoys: likely in a real pause, occasional in a one-beat gap.
       extras.push({ kind: 'civilian', time: from + (to - from) / 2 - 0.5 * beat, duration: beat });
     }
   }
@@ -185,5 +197,5 @@ export function generateChart(analysis: Analysis, difficulty: Difficulty): Chart
     prevKind = d.kind;
   }
 
-  return { notes, reloads, bpm: analysis.bpm, phase: analysis.phase, duration: analysis.duration, difficulty, approach: tune.approach };
+  return { notes, interludes, bpm: analysis.bpm, phase: analysis.phase, duration: analysis.duration, difficulty, approach: tune.approach };
 }
